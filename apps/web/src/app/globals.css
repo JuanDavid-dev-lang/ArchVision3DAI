@@ -1,0 +1,123 @@
+@import "tailwindcss";
+
+/*
+ * Sistema visual de ArchVision 3D AI.
+ *
+ * Referencia: software CAD moderno. Superficies frias y oscuras, acento
+ * cian tecnico, tipografia compacta y bordes de 1px. El editor usa siempre el
+ * tema oscuro; el dashboard y la landing respetan la eleccion del usuario.
+ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-subtle: var(--ink-subtle);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-ok: var(--ok);
+
+  --font-sans: var(--font-sans-stack);
+  --font-mono: var(--font-mono-stack);
+
+  --radius-panel: 0.75rem;
+}
+
+:root {
+  --font-sans-stack: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono-stack: ui-monospace, "JetBrains Mono", "Cascadia Mono", Menlo,
+    Consolas, monospace;
+
+  /* Tema claro */
+  --canvas: #f4f6f8;
+  --surface: #ffffff;
+  --surface-2: #eef1f5;
+  --surface-3: #e3e8ee;
+  --line: #d8dee6;
+  --line-strong: #b9c2cd;
+  --ink: #10151c;
+  --ink-muted: #4d5866;
+  --ink-subtle: #7b8794;
+  --accent: #0e7490;
+  --accent-soft: #cffafe;
+  --accent-ink: #ffffff;
+  --warn: #b45309;
+  --danger: #b91c1c;
+  --ok: #15803d;
+}
+
+.dark {
+  /* Tema oscuro: por defecto en editor y recomendado en dashboard */
+  --canvas: #0a0c10;
+  --surface: #11151b;
+  --surface-2: #171c24;
+  --surface-3: #1f252f;
+  --line: #262d38;
+  --line-strong: #38414f;
+  --ink: #e8edf4;
+  --ink-muted: #a3adbb;
+  --ink-subtle: #6b7686;
+  --accent: #22d3ee;
+  --accent-soft: #0b3a46;
+  --accent-ink: #04191f;
+  --warn: #f59e0b;
+  --danger: #f87171;
+  --ok: #4ade80;
+}
+
+* {
+  border-color: var(--line);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans-stack);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Retícula técnica usada en cabeceras y en el fondo de la landing. */
+.blueprint-grid {
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--line) 60%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--line) 60%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.blueprint-grid-lg {
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--line) 45%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--line) 45%, transparent) 1px, transparent 1px);
+  background-size: 96px 96px;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--accent) 35%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Scrollbars discretas, coherentes con una herramienta de diseno. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}

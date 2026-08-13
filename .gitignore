@@ -1,0 +1,33 @@
+node_modules/
+.next/
+out/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Database (dev SQLite)
+*.db
+*.db-journal
+*.sqlite
+packages/database/prisma/dev.db*
+
+# Storage local (object storage emulado en dev)
+storage/
+
+# Python (ai-service)
+__pycache__/
+*.pyc
+.venv/
+
+# OS / editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

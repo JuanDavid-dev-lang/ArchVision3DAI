@@ -1,0 +1,395 @@
+// ---------------------------------------------------------------------------
+// ArchVision 3D AI - esquema de datos
+//
+// PORTABILIDAD: el esquema evita deliberadamente caracteristicas exclusivas de
+// PostgreSQL (enums nativos, arrays, tipo Json). Los campos de tipo enumerado
+// se guardan como String y se validan con Zod; los documentos se guardan como
+// String con JSON serializado. Para pasar a PostgreSQL basta cambiar
+// `provider = "postgresql"` y ejecutar una nueva migracion.
+//
+// REGLA: ningun archivo binario vive en la base de datos, solo su storageKey.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// --------------------------------------------------------------------------
+// Identidad y acceso
+// --------------------------------------------------------------------------
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  name            String
+  passwordHash    String
+  // "USER" | "PROFESSIONAL" | "ADMIN"
+  role            String    @default("USER")
+  // "free" | "pro" | "studio" | "enterprise"
+  plan            String    @default("free")
+  emailVerifiedAt DateTime?
+  avatarUrl       String?
+  // Preferencias de interfaz serializadas (tema, unidad por defecto...).
+  preferences     String    @default("{}")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sessions        Session[]
+  passwordResets  PasswordResetToken[]
+  memberships     WorkspaceMember[]
+  ownedWorkspaces Workspace[]          @relation("WorkspaceOwner")
+  projects        Project[]            @relation("ProjectOwner")
+  versions        ProjectVersion[]
+  auditEvents     AuditEvent[]
+  subscription    Subscription?
+  payments        Payment[]
+
+  @@index([createdAt])
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  // Solo se guarda el hash SHA-256 del token; el valor plano vive en la cookie.
+  tokenHash String   @unique
+  expiresAt DateTime
+  userAgent String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// --------------------------------------------------------------------------
+// Workspaces (equipos)
+// --------------------------------------------------------------------------
+
+model Workspace {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  ownerId   String
+  // Bytes consumidos por archivos del workspace (denormalizado para cuotas).
+  usedBytes Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner    User              @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members  WorkspaceMember[]
+  projects Project[]
+
+  @@index([ownerId])
+}
+
+model WorkspaceMember {
+  id          String   @id @default(uuid())
+  workspaceId String
+  userId      String
+  // "OWNER" | "ADMIN" | "EDITOR" | "VIEWER"
+  role        String   @default("EDITOR")
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+// --------------------------------------------------------------------------
+// Proyectos
+// --------------------------------------------------------------------------
+
+model Project {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  ownerId        String
+  name           String
+  description    String?
+  // ProjectType: house | apartment | building | office | commercial | custom
+  type           String    @default("house")
+  // UnitSystem: m | cm | mm | ft | in
+  units          String    @default("m")
+  // CreationMethod: photos | floorplan | draw | empty
+  creationMethod String    @default("draw")
+  // ProjectStatus: draft | processing | ready | error
+  status         String    @default("draft")
+  progress       Int       @default(0)
+  location       String?
+  floorsCount    Int       @default(1)
+  areaEstimate   Float?
+  floorHeight    Float     @default(2.6)
+  thumbnailUrl   String?
+  sizeBytes      Int       @default(0)
+  // Borrado logico: alimenta la papelera del dashboard.
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  workspace Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  owner     User             @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  scene     Scene?
+  files     ProjectFile[]
+  versions  ProjectVersion[]
+  analyses  AIAnalysis[]
+  exports   ExportJob[]
+  shares    ShareLink[]
+
+  @@index([workspaceId, updatedAt])
+  @@index([ownerId])
+  @@index([deletedAt])
+}
+
+model Scene {
+  id            String   @id @default(uuid())
+  projectId     String   @unique
+  // Version del formato SceneDocument (ver packages/types/src/scene.ts).
+  schemaVersion String   @default("1.0")
+  // SceneDocument serializado. Nunca contiene objetos de Three.js.
+  dataJson      String
+  // Contador incremental usado para deteccion de conflictos al guardar.
+  revision      Int      @default(1)
+  updatedAt     DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model ProjectFile {
+  id           String   @id @default(uuid())
+  projectId    String
+  // "photo" | "floorplan" | "texture" | "model" | "render" | "export"
+  kind         String
+  // PhotoRole cuando kind = "photo": front | back | left | right | roof | interior | detail | other
+  role         String?
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  // Clave en el object storage. Nunca una ruta local expuesta al cliente.
+  storageKey   String
+  width        Int?
+  height       Int?
+  checksum     String?
+  createdAt    DateTime @default(now())
+
+  project  Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  analyses AIAnalysis[]
+
+  @@index([projectId, kind])
+}
+
+model ProjectVersion {
+  id          String   @id @default(uuid())
+  projectId   String
+  label       String
+  // Snapshot completo del SceneDocument en el momento de crear la version.
+  dataJson    String
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([projectId, createdAt])
+}
+
+// --------------------------------------------------------------------------
+// Inteligencia artificial y trabajos asincronos
+// --------------------------------------------------------------------------
+
+model AIAnalysis {
+  id         String    @id @default(uuid())
+  projectId  String
+  fileId     String?
+  // "analyze-image" | "analyze-floorplan" | "estimate-depth" | "reconstruct"
+  kind       String
+  // AIJobStatus: queued | running | succeeded | failed | canceled
+  status     String    @default("queued")
+  progress   Int       @default(0)
+  // AIJobStage actual.
+  stage      String    @default("uploading")
+  // ImageAnalysisResult serializado.
+  resultJson String?
+  error      String?
+  // Coste estimado en creditos (modelo de negocio futuro).
+  credits    Int       @default(0)
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  project Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  file    ProjectFile? @relation(fields: [fileId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, status])
+}
+
+model ExportJob {
+  id         String    @id @default(uuid())
+  projectId  String
+  // glb | gltf | obj | stl | json | png | jpg | pdf
+  format     String
+  status     String    @default("queued")
+  storageKey String?
+  sizeBytes  Int       @default(0)
+  error      String?
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+}
+
+// --------------------------------------------------------------------------
+// Colaboracion y auditoria
+// --------------------------------------------------------------------------
+
+model ShareLink {
+  id           String    @id @default(uuid())
+  projectId    String
+  token        String    @unique
+  // "public" | "private" | "password"
+  visibility   String    @default("private")
+  passwordHash String?
+  expiresAt    DateTime?
+  createdAt    DateTime  @default(now())
+  revokedAt    DateTime?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model AuditEvent {
+  id         String   @id @default(uuid())
+  userId     String?
+  // "project.created" | "project.deleted" | "auth.login" | ...
+  action     String
+  targetType String?
+  targetId   String?
+  // Metadatos serializados. Nunca datos personales sensibles.
+  metaJson   String   @default("{}")
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([action, createdAt])
+  @@index([userId])
+}
+
+// --------------------------------------------------------------------------
+// Facturacion
+//
+// REGLA: aqui no entra ningun dato de tarjeta, ni siquiera cifrado. El cobro
+// ocurre en la pasarela; nosotros guardamos identificadores suyos, importes y
+// fechas. Lo maximo que se conserva de un medio de pago son los cuatro ultimos
+// digitos y la marca, que es lo que el usuario necesita para reconocerlo.
+// --------------------------------------------------------------------------
+
+model Subscription {
+  id     String @id @default(uuid())
+  userId String @unique
+  // Plan contratado: pro | studio | enterprise
+  plan   String
+  // trialing | active | past_due | canceled | incomplete
+  status String @default("incomplete")
+  // manual | wompi
+  provider String @default("manual")
+
+  // Identificadores en la pasarela. Nunca se usan como clave de negocio.
+  providerCustomerId     String?
+  providerSubscriptionId String? @unique
+  // Medio de pago tokenizado con el que se cobran las renovaciones.
+  paymentSourceId        String?
+  cardBrand              String?
+  cardLast4              String?
+
+  // month | year
+  interval    String @default("month")
+  currency    String @default("COP")
+  amountCents Int    @default(0)
+
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  // El usuario pidio la baja pero conserva el servicio hasta fin de periodo.
+  cancelAtPeriodEnd  Boolean   @default(false)
+  canceledAt         DateTime?
+  trialEndsAt        DateTime?
+  // Momento del primer cobro fallido; marca el inicio del periodo de gracia.
+  pastDueSince       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments Payment[]
+
+  @@index([status, currentPeriodEnd])
+}
+
+model Payment {
+  id             String  @id @default(uuid())
+  userId         String
+  subscriptionId String?
+  provider       String  @default("manual")
+  // Identificador de la transaccion en la pasarela.
+  providerPaymentId String? @unique
+  // Referencia propia que viaja a la pasarela y vuelve en el evento.
+  reference      String  @unique
+  // pending | approved | declined | voided | error | refunded
+  status         String  @default("pending")
+  amountCents    Int
+  currency       String  @default("COP")
+  description    String
+  // Motivo del rechazo tal como lo devuelve la pasarela.
+  failureReason  String?
+  paidAt         DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+// Eventos recibidos de la pasarela. Existe por una razon concreta: las
+// pasarelas reintentan, y sin registro de lo ya procesado un mismo pago
+// ampliaria el periodo dos veces.
+model BillingEvent {
+  id         String    @id @default(uuid())
+  provider   String
+  // Identificador del evento en la pasarela; unico para descartar repeticiones.
+  externalId String
+  type       String
+  payloadJson String
+  receivedAt DateTime  @default(now())
+  processedAt DateTime?
+  error      String?
+
+  @@unique([provider, externalId])
+  @@index([type, receivedAt])
+}

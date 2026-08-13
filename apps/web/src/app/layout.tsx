@@ -1,0 +1,36 @@
+import type { Metadata, Viewport } from "next";
+import { brand } from "@archvision/config";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: {
+    default: `${brand.name} - ${brand.tagline}`,
+    template: `%s | ${brand.name}`,
+  },
+  description: brand.subtitle,
+  applicationName: brand.name,
+  authors: [{ name: brand.company }],
+  robots: { index: true, follow: true },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0a0c10",
+  width: "device-width",
+  initialScale: 1,
+};
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  // El tema oscuro es el predeterminado del producto (herramienta de diseno).
+  // La preferencia por usuario se aplicara desde el store de UI en Fase 2.
+  return (
+    <html lang="es" className="dark">
+      <body className="min-h-screen bg-canvas text-ink antialiased">
+        {children}
+      </body>
+    </html>
+  );
+}

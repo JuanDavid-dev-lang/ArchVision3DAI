@@ -1,0 +1,509 @@
+"use client";
+
+import { create } from "zustand";
+import { SCENE_SCHEMA_VERSION } from "@archvision/types";
+import type {
+  SceneCommand,
+  SceneDocument,
+  UnitSystem,
+  Vector2,
+} from "@archvision/types";
+import { CommandError, applyCommand, withRecomputedRooms } from "@archvision/shared";
+import type { AssistantMessage } from "@archvision/assistant";
+import type { StandardView } from "@archvision/three-engine";
+
+/**
+ * Estado del editor.
+ *
+ * Reglas que sostienen todo el modulo:
+ *  - la unica via de mutacion de la escena es `dispatch(command)`;
+ *  - el historial guarda instantaneas del documento, no diferencias, porque el
+ *    documento es serializable y pequeno comparado con la memoria del visor;
+ *  - las habitaciones se recalculan solo tras comandos estructurales.
+ */
+
+export type ToolId =
+  | "select"
+  | "wall"
+  | "door"
+  | "window"
+  | "column"
+  | "stair"
+  | "furniture"
+  | "paint"
+  | "calibrate"
+  | "measure";
+
+export type ViewMode = "2d" | "3d" | "split";
+
+export type SaveStatus = "saved" | "dirty" | "saving" | "error" | "conflict";
+
+/** Comandos que pueden cambiar los recintos cerrados. */
+const STRUCTURAL_COMMANDS = new Set([
+  "CREATE_WALL",
+  "UPDATE_WALL",
+  "DELETE_OBJECTS",
+  "TRANSFORM_OBJECTS",
+  "CREATE_FLOOR",
+]);
+
+const HISTORY_LIMIT = 80;
+
+/** Muro propuesto por la deteccion, con su marca de aceptacion. */
+export interface ProposedWall {
+  start: Vector2;
+  end: Vector2;
+  thickness: number;
+  length: number;
+  confidence: number;
+  accepted: boolean;
+}
+
+export interface MeasureState {
+  start: Vector2 | null;
+  end: Vector2 | null;
+}
+
+interface EditorState {
+  projectId: string;
+  projectName: string;
+  units: UnitSystem;
+
+  scene: SceneDocument;
+  revision: number;
+
+  past: SceneDocument[];
+  future: SceneDocument[];
+
+  selection: string[];
+  hoveredId: string | null;
+
+  tool: ToolId;
+  viewMode: ViewMode;
+  activeFloorId: string | null;
+  furnitureCatalogId: string;
+  /** Material cargado en el pincel y arrastrado desde la biblioteca. */
+  activeMaterialId: string | null;
+  materialsOpen: boolean;
+  /**
+   * Soltar un material sobre el visor 3D. El lienzo no participa en el
+   * arrastre HTML, asi que la coordenada del cursor viaja por el estado y el
+   * visor resuelve contra que objeto cayo.
+   */
+  pendingDrop: { clientX: number; clientY: number; materialId: string } | null;
+
+  /** Panel de importacion de planos. */
+  planPanelOpen: boolean;
+  /** Dos puntos marcados sobre el plano para fijar la escala. */
+  calibration: MeasureState;
+  /**
+   * Muros propuestos por la deteccion automatica, en coordenadas del modelo.
+   * Se muestran como propuesta y no se aplican hasta que el usuario acepta:
+   * ninguna deteccion entra en el documento sin revision humana.
+   */
+  proposal: ProposedWall[] | null;
+
+  /** Panel del asistente. */
+  assistantOpen: boolean;
+  /**
+   * Conversacion. Vive en el store y no en el componente para que cerrar el
+   * panel no borre lo hablado: se cierra para ver el modelo y se vuelve.
+   */
+  assistantMessages: AssistantMessage[];
+
+  snapEnabled: boolean;
+  gridStep: number;
+  showGrid: boolean;
+
+  saveStatus: SaveStatus;
+  lastSavedAt: number | null;
+  message: { kind: "error" | "info"; text: string } | null;
+
+  /** Solicitud de encuadre pendiente para el visor 3D. */
+  pendingView: StandardView | "fit" | null;
+
+  measure: MeasureState;
+  paletteOpen: boolean;
+
+  initialize: (payload: {
+    projectId: string;
+    projectName: string;
+    units: UnitSystem;
+    scene: SceneDocument;
+    revision: number;
+  }) => void;
+
+  dispatch: (command: SceneCommand) => boolean;
+  /** Aplica varios comandos como un solo paso del historial. */
+  dispatchBatch: (commands: readonly SceneCommand[]) => boolean;
+  undo: () => void;
+  redo: () => void;
+
+  setTool: (tool: ToolId) => void;
+  setViewMode: (mode: ViewMode) => void;
+  setActiveFloor: (floorId: string) => void;
+  setFurnitureCatalogId: (catalogId: string) => void;
+  setActiveMaterialId: (materialId: string | null) => void;
+  setMaterialsOpen: (open: boolean) => void;
+  requestDrop: (
+    drop: { clientX: number; clientY: number; materialId: string } | null,
+  ) => void;
+  paintMaterial: (targetId: string) => boolean;
+
+  setAssistantOpen: (open: boolean) => void;
+  addAssistantMessages: (messages: AssistantMessage[]) => void;
+  clearAssistant: () => void;
+
+  setPlanPanelOpen: (open: boolean) => void;
+  setCalibration: (calibration: MeasureState) => void;
+  setProposal: (proposal: ProposedWall[] | null) => void;
+  toggleProposal: (index: number) => void;
+  applyProposal: () => number;
+
+  select: (ids: string[], additive?: boolean) => void;
+  toggleSelection: (id: string) => void;
+  clearSelection: () => void;
+  setHovered: (id: string | null) => void;
+
+  setSnapEnabled: (value: boolean) => void;
+  setGridStep: (value: number) => void;
+  setShowGrid: (value: boolean) => void;
+
+  requestView: (view: StandardView | "fit" | null) => void;
+  setMeasure: (measure: MeasureState) => void;
+  setPaletteOpen: (open: boolean) => void;
+
+  setSaveStatus: (status: SaveStatus) => void;
+  markSaved: (revision: number) => void;
+  setMessage: (message: { kind: "error" | "info"; text: string } | null) => void;
+  replaceScene: (scene: SceneDocument, revision: number) => void;
+}
+
+const EMPTY_SCENE: SceneDocument = {
+  version: SCENE_SCHEMA_VERSION,
+  displayUnit: "m",
+  floors: [],
+  walls: [],
+  doors: [],
+  windows: [],
+  openings: [],
+  columns: [],
+  stairs: [],
+  roofs: [],
+  slabs: [],
+  rooms: [],
+  furniture: [],
+  materials: [],
+  lights: [],
+  cameras: [],
+  environment: {
+    sky: "clear",
+    northAngleDeg: 0,
+    groundColor: "#3f4a3c",
+    showGrid: true,
+  },
+  activeFloorId: null,
+};
+
+export const useEditorStore = create<EditorState>()((set, get) => ({
+  projectId: "",
+  projectName: "",
+  units: "m",
+
+  scene: EMPTY_SCENE,
+  revision: 0,
+
+  past: [],
+  future: [],
+
+  selection: [],
+  hoveredId: null,
+
+  tool: "select",
+  viewMode: "split",
+  activeFloorId: null,
+  furnitureCatalogId: "sofa-3-seat",
+  activeMaterialId: null,
+  materialsOpen: false,
+  pendingDrop: null,
+
+  planPanelOpen: false,
+  calibration: { start: null, end: null },
+  proposal: null,
+
+  assistantOpen: false,
+  assistantMessages: [],
+
+  snapEnabled: true,
+  gridStep: 0.1,
+  showGrid: true,
+
+  saveStatus: "saved",
+  lastSavedAt: null,
+  message: null,
+
+  pendingView: null,
+  measure: { start: null, end: null },
+  paletteOpen: false,
+
+  initialize: ({ projectId, projectName, units, scene, revision }) => {
+    // La deteccion de habitaciones se ejecuta al abrir para que los proyectos
+    // creados antes de esta fase muestren sus areas sin intervencion.
+    const prepared = withRecomputedRooms(scene);
+    set({
+      projectId,
+      projectName,
+      units,
+      scene: prepared,
+      revision,
+      past: [],
+      future: [],
+      selection: [],
+      hoveredId: null,
+      activeFloorId: prepared.activeFloorId ?? prepared.floors[0]?.id ?? null,
+      saveStatus: "saved",
+      lastSavedAt: Date.now(),
+      message: null,
+      measure: { start: null, end: null },
+    });
+  },
+
+  dispatch: (command) => {
+    const { scene, past } = get();
+
+    try {
+      const next = applyCommand(scene, command);
+      const withRooms = STRUCTURAL_COMMANDS.has(command.type)
+        ? withRecomputedRooms(next)
+        : next;
+
+      set({
+        scene: withRooms,
+        past: [...past, scene].slice(-HISTORY_LIMIT),
+        future: [],
+        saveStatus: "dirty",
+        message: null,
+        activeFloorId: withRooms.activeFloorId ?? get().activeFloorId,
+      });
+      return true;
+    } catch (error) {
+      const text =
+        error instanceof CommandError
+          ? error.message
+          : "No fue posible aplicar el cambio";
+      set({ message: { kind: "error", text } });
+      return false;
+    }
+  },
+
+  /**
+   * Varios comandos, un solo paso de deshacer.
+   *
+   * Una habitacion son cuatro muros pero una sola decision: obligar a pulsar
+   * Ctrl+Z cuatro veces para deshacerla seria castigar al usuario por como
+   * esta implementada. Ademas es todo o nada: si un comando falla, no se
+   * aplica ninguno, y la escena nunca queda a medias.
+   */
+  dispatchBatch: (commands) => {
+    if (commands.length === 0) return false;
+
+    const { scene, past } = get();
+
+    try {
+      let next = scene;
+      for (const command of commands) next = applyCommand(next, command);
+
+      const structural = commands.some((command) =>
+        STRUCTURAL_COMMANDS.has(command.type),
+      );
+      const withRooms = structural ? withRecomputedRooms(next) : next;
+
+      set({
+        scene: withRooms,
+        past: [...past, scene].slice(-HISTORY_LIMIT),
+        future: [],
+        saveStatus: "dirty",
+        message: null,
+        activeFloorId: withRooms.activeFloorId ?? get().activeFloorId,
+      });
+      return true;
+    } catch (error) {
+      const text =
+        error instanceof CommandError
+          ? error.message
+          : "No fue posible aplicar los cambios";
+      set({ message: { kind: "error", text } });
+      return false;
+    }
+  },
+
+  undo: () => {
+    const { past, future, scene } = get();
+    const previous = past[past.length - 1];
+    if (!previous) return;
+
+    set({
+      scene: previous,
+      past: past.slice(0, -1),
+      future: [scene, ...future].slice(0, HISTORY_LIMIT),
+      saveStatus: "dirty",
+      selection: [],
+    });
+  },
+
+  redo: () => {
+    const { past, future, scene } = get();
+    const next = future[0];
+    if (!next) return;
+
+    set({
+      scene: next,
+      past: [...past, scene].slice(-HISTORY_LIMIT),
+      future: future.slice(1),
+      saveStatus: "dirty",
+      selection: [],
+    });
+  },
+
+  setTool: (tool) =>
+    set({ tool, measure: { start: null, end: null }, message: null }),
+  setViewMode: (viewMode) => set({ viewMode }),
+  setActiveFloor: (floorId) =>
+    set((state) => ({
+      activeFloorId: floorId,
+      scene: { ...state.scene, activeFloorId: floorId },
+      selection: [],
+    })),
+  setFurnitureCatalogId: (furnitureCatalogId) => set({ furnitureCatalogId }),
+
+  setActiveMaterialId: (activeMaterialId) => set({ activeMaterialId }),
+  setMaterialsOpen: (materialsOpen) => set({ materialsOpen }),
+  requestDrop: (pendingDrop) => set({ pendingDrop }),
+
+  /**
+   * Aplica el material cargado a una entidad.
+   *
+   * Vive en el store y no en cada visor porque lo usan tres caminos distintos
+   * (pincel en 3D, pincel en planta y soltar desde la biblioteca) y las tres
+   * deben comportarse igual, incluido el aviso cuando no hay material elegido.
+   */
+  paintMaterial: (targetId) => {
+    const materialId = get().activeMaterialId;
+    if (!materialId) {
+      set({
+        message: { kind: "error", text: "Elige un material en la biblioteca" },
+      });
+      return false;
+    }
+    return get().dispatch({
+      type: "ASSIGN_MATERIAL",
+      targetIds: [targetId],
+      materialId,
+    });
+  },
+
+  setAssistantOpen: (assistantOpen) => set({ assistantOpen }),
+  addAssistantMessages: (messages) =>
+    set((state) => ({
+      assistantMessages: [...state.assistantMessages, ...messages],
+    })),
+  clearAssistant: () => set({ assistantMessages: [] }),
+
+  setPlanPanelOpen: (planPanelOpen) => set({ planPanelOpen }),
+  setCalibration: (calibration) => set({ calibration }),
+  setProposal: (proposal) => set({ proposal }),
+
+  toggleProposal: (index) =>
+    set((state) => {
+      if (!state.proposal) return {};
+      return {
+        proposal: state.proposal.map((wall, position) =>
+          position === index ? { ...wall, accepted: !wall.accepted } : wall,
+        ),
+      };
+    }),
+
+  /**
+   * Convierte la propuesta aceptada en muros reales.
+   *
+   * Se emite un comando por muro, con `origin: "import"`, de modo que la
+   * operacion completa se deshace igual que cualquier otra edicion y queda
+   * registrado que el trazado no lo hizo el usuario a mano.
+   */
+  applyProposal: () => {
+    const { proposal, activeFloorId, dispatch } = get();
+    if (!proposal || !activeFloorId) return 0;
+
+    let created = 0;
+    for (const wall of proposal) {
+      if (!wall.accepted) continue;
+      const ok = dispatch({
+        type: "CREATE_WALL",
+        origin: "import",
+        floorId: activeFloorId,
+        start: wall.start,
+        end: wall.end,
+        thickness: wall.thickness,
+      });
+      if (ok) created += 1;
+    }
+
+    set({ proposal: null });
+    return created;
+  },
+
+  select: (ids, additive = false) =>
+    set((state) => ({
+      selection: additive
+        ? Array.from(new Set([...state.selection, ...ids]))
+        : ids,
+    })),
+
+  toggleSelection: (id) =>
+    set((state) => ({
+      selection: state.selection.includes(id)
+        ? state.selection.filter((item) => item !== id)
+        : [...state.selection, id],
+    })),
+
+  clearSelection: () => set({ selection: [] }),
+  setHovered: (hoveredId) => set({ hoveredId }),
+
+  setSnapEnabled: (snapEnabled) => set({ snapEnabled }),
+  setGridStep: (gridStep) => set({ gridStep }),
+  setShowGrid: (showGrid) => set({ showGrid }),
+
+  requestView: (pendingView) => set({ pendingView }),
+  setMeasure: (measure) => set({ measure }),
+  setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
+
+  setSaveStatus: (saveStatus) => set({ saveStatus }),
+  markSaved: (revision) =>
+    set({ revision, saveStatus: "saved", lastSavedAt: Date.now() }),
+  setMessage: (message) => set({ message }),
+  replaceScene: (scene, revision) =>
+    set({
+      scene: withRecomputedRooms(scene),
+      revision,
+      past: [],
+      future: [],
+      selection: [],
+      saveStatus: "saved",
+      lastSavedAt: Date.now(),
+    }),
+}));
+
+/** Nivel activo resuelto, con reserva al primero disponible. */
+export function useActiveFloor() {
+  return useEditorStore((state) => {
+    const id = state.activeFloorId ?? state.scene.floors[0]?.id ?? null;
+    return state.scene.floors.find((floor) => floor.id === id) ?? null;
+  });
+}
+
+/** Comprueba si el historial permite deshacer o rehacer. */
+export function useHistoryFlags() {
+  const canUndo = useEditorStore((state) => state.past.length > 0);
+  const canRedo = useEditorStore((state) => state.future.length > 0);
+  return { canUndo, canRedo };
+}

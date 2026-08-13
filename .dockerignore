@@ -1,0 +1,16 @@
+node_modules
+**/node_modules
+.next
+**/.next
+dist
+build
+coverage
+.git
+.env
+.env.*
+!.env.example
+storage
+*.db
+*.sqlite
+__pycache__
+.venv
