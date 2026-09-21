@@ -90,7 +90,7 @@ node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 
 # 3. Cliente de Prisma y esquema de base de datos
 pnpm db:generate
-pnpm --filter @archvision/database exec prisma migrate deploy
+pnpm db:deploy
 
 # 4. Datos de ejemplo (casa demo de dos plantas)
 pnpm db:seed
