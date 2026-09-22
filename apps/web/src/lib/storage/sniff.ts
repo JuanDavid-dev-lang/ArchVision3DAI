@@ -74,9 +74,9 @@ function ascii(data: Uint8Array, offset: number, length: number): string {
 
 function readUInt32BE(data: Uint8Array, offset: number): number {
   return (
-    data[offset] * 0x1000000 +
-    data[offset + 1] * 0x10000 +
-    data[offset + 2] * 0x100 +
-    data[offset + 3]
+    (data[offset] ?? 0) * 0x1000000 +
+    (data[offset + 1] ?? 0) * 0x10000 +
+    (data[offset + 2] ?? 0) * 0x100 +
+    (data[offset + 3] ?? 0)
   );
 }
